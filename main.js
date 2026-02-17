@@ -15,40 +15,154 @@
 
   // ===== CEP Bridge =====
   const cs = new CSInterface();
+  const evalQueue = [];
+  let evalInFlight = false;
+  let jsxLoaded = false;
+  let jsxLoading = false;
+  const jsxWaiters = [];
 
   function jsxEscapePath(p) {
     // Для строки JSX: экранируем обратные слэши и кавычки
     return p.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
 
-  // Грузим JSX из файла и проверяем, что функция существует
-  function loadJSX() {
-    try {
-      const extPath = cs.getSystemPath(SystemPath.EXTENSION);
-      const jsxPath = extPath + "/jsx/hostscript.jsx";
-
-      setStatus("Загружаю JSX: " + jsxPath);
-
-      cs.evalScript("app.version", (v) => {
-        if (!v) return setStatus("Premiere не ответил на app.version (evalScript не работает)");
-
-        const p = jsxEscapePath(jsxPath);
-        cs.evalScript('$.evalFile("' + p + '")', () => {
-          cs.evalScript("typeof SDE_InsertMeme", (t) => {
-            setStatus("JSX: typeof SDE_InsertMeme = " + t);
-          });
-        });
-      });
-    } catch (e) {
-      setStatus("Ошибка loadJSX: " + e.toString());
+  function flushJSXWaiters(result) {
+    while (jsxWaiters.length) {
+      const cb = jsxWaiters.shift();
+      try { cb(result); } catch (e) { console.log("[SDEHelper] waiter error", e); }
     }
   }
 
-  function pingPremiere() {
-    cs.evalScript("app.version", function (v) {
-      setStatus("Связь с Premiere OK. Версия: " + v);
-      loadJSX();
+  function pumpEvalQueue() {
+    if (evalInFlight || evalQueue.length === 0) return;
+    evalInFlight = true;
+    const task = evalQueue.shift();
+    const timeoutMs = task.timeoutMs || 8000;
+    let done = false;
+
+    setStatus("JSX call → " + task.label);
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      console.warn("[SDEHelper] evalScript TIMEOUT", task.label, task.script);
+      setStatus("TIMEOUT: " + task.label);
+      task.cb("TIMEOUT");
+      evalInFlight = false;
+      pumpEvalQueue();
+    }, timeoutMs);
+
+    cs.evalScript(task.script, (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      console.log("[SDEHelper] evalScript OK", task.label, result);
+      task.cb(typeof result === "string" ? result : String(result));
+      evalInFlight = false;
+      pumpEvalQueue();
     });
+  }
+
+  function queuedEvalScript(script, cb, opts) {
+    const options = opts || {};
+    evalQueue.push({
+      script,
+      cb: cb || function () {},
+      label: options.label || script,
+      timeoutMs: options.timeoutMs || 8000
+    });
+    pumpEvalQueue();
+  }
+
+  function isEvalFailure(result) {
+    if (!result) return true;
+    return result === "TIMEOUT" || /^EvalScript error\./i.test(result) || /^ERROR:/i.test(result);
+  }
+
+  // Грузим JSX из файла один раз и проверяем, что функции существуют
+  function ensureJSXLoaded(cb) {
+    if (jsxLoaded) return cb("OK");
+    jsxWaiters.push(cb);
+    if (jsxLoading) return;
+    jsxLoading = true;
+
+    try {
+      const extPath = cs.getSystemPath(SystemPath.EXTENSION);
+      const jsxPath = extPath + "/jsx/hostscript.jsx";
+      const p = jsxEscapePath(jsxPath);
+
+      setStatus("Загружаю JSX: " + jsxPath);
+      const checkTypes = () => {
+        queuedEvalScript("typeof SDE_InsertMeme + '|' + typeof SDE_Ping", (types) => {
+          const ok = types === "function|function";
+          jsxLoaded = ok;
+          jsxLoading = false;
+          if (!ok) {
+            const msg = "JSX не загружен корректно: " + types;
+            setStatus(msg);
+            flushJSXWaiters("ERROR: " + msg);
+            return;
+          }
+          setStatus("JSX загружен: " + types);
+          flushJSXWaiters("OK");
+        }, { label: "typeof SDE_InsertMeme/SDE_Ping", timeoutMs: 5000 });
+      };
+
+      // Если ScriptPath уже загрузил JSX, не вызываем $.evalFile лишний раз.
+      queuedEvalScript("typeof SDE_InsertMeme + '|' + typeof SDE_Ping", (typesBefore) => {
+        if (typesBefore === "function|function") {
+          jsxLoaded = true;
+          jsxLoading = false;
+          setStatus("JSX уже загружен: " + typesBefore);
+          flushJSXWaiters("OK");
+          return;
+        }
+
+        const loadCall = '(function(){try{var f=File("' + p + '"); if(!f.exists){return "ERROR: JSX file not found";} $.evalFile(f); return "OK";}catch(e){return "ERROR: " + e.toString();}})()';
+        queuedEvalScript(loadCall, (loadRes) => {
+          if (isEvalFailure(loadRes)) {
+            jsxLoading = false;
+            const msg = "Не удалось загрузить JSX: " + loadRes;
+            setStatus(msg);
+            flushJSXWaiters("ERROR: " + msg);
+            return;
+          }
+          checkTypes();
+        }, { label: "$.evalFile(hostscript.jsx)", timeoutMs: 12000 });
+      }, { label: "check JSX exports", timeoutMs: 5000 });
+    } catch (e) {
+      jsxLoading = false;
+      const msg = "Ошибка loadJSX: " + e.toString();
+      setStatus(msg);
+      flushJSXWaiters("ERROR: " + msg);
+    }
+  }
+
+  function pingPremiere(attempt) {
+    const tryNum = attempt || 1;
+
+    // app.version иногда подвисает в некоторых состояниях хоста.
+    // Сначала быстрый probe движка ExtendScript.
+    queuedEvalScript("$.engineName", function (engine) {
+      if (!engine || engine === "TIMEOUT") {
+        if (tryNum < 3) {
+          setStatus("Нет ответа от ExtendScript (попытка " + tryNum + "), повтор...");
+          return setTimeout(() => pingPremiere(tryNum + 1), 700);
+        }
+        return setStatus("Premiere не ответил на ExtendScript probe");
+      }
+
+      queuedEvalScript("app.version", function (v) {
+        if (!v || v === "TIMEOUT") {
+          setStatus("Связь с Premiere частично OK (engine: " + engine + "), app.version не ответил");
+        } else {
+          setStatus("Связь с Premiere OK. Версия: " + v);
+        }
+
+        ensureJSXLoaded(function (res) {
+          if (res !== "OK") setStatus(res);
+        });
+      }, { label: "app.version", timeoutMs: 5000 });
+    }, { label: "$.engineName", timeoutMs: 3500 });
   }
 
   pingPremiere();
@@ -109,25 +223,22 @@
       // Важно: передавать путь со слэшами — Premiere/ExtendScript любит так больше
       const cachedPath = cachedPathWin.replace(/\\/g, "/");
 
-      // 1) Проверяем, что JSX вообще отвечает на нашу функцию
-      setStatus("Ping JSX...");
-      cs.evalScript("SDE_Ping()", (pong) => {
-        setStatus("Ping ответ: " + pong);
+      ensureJSXLoaded((loadRes) => {
+        if (loadRes !== "OK") return setStatus(loadRes);
 
-        // 2) Вставка (путь передаём безопасно через JSON.stringify)
-        setStatus("Вставляю в таймлайн...");
+        // 1) Проверяем, что JSX вообще отвечает на нашу функцию
+        setStatus("Ping JSX...");
+        queuedEvalScript("SDE_Ping()", (pong) => {
+          setStatus("Ping ответ: " + pong);
+          if (pong !== "PONG") return;
 
-        let gotReply = false;
-        const timer = setTimeout(() => {
-          if (!gotReply) setStatus("Нет ответа от Premiere на SDE_InsertMeme (скорее всего зависает importFiles).");
-        }, 6000);
-
-        const call = "SDE_InsertMeme(" + JSON.stringify(cachedPath) + ")";
-        cs.evalScript(call, (res) => {
-          gotReply = true;
-          clearTimeout(timer);
-          setStatus("Ответ Premiere: " + (res === "" ? "(пусто)" : res));
-        });
+          // 2) Вставка (путь передаём безопасно через JSON.stringify)
+          setStatus("Вставляю в таймлайн...");
+          const call = "SDE_InsertMeme(" + JSON.stringify(cachedPath) + ")";
+          queuedEvalScript(call, (res) => {
+            setStatus("Ответ Premiere: " + (res === "" ? "(пусто)" : res));
+          }, { label: "SDE_InsertMeme", timeoutMs: 15000 });
+        }, { label: "SDE_Ping", timeoutMs: 5000 });
       });
     });
   }
