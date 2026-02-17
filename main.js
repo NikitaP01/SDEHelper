@@ -73,11 +73,6 @@
     pumpEvalQueue();
   }
 
-  function isEvalFailure(result) {
-    if (!result) return true;
-    return result === "TIMEOUT" || /^EvalScript error\./i.test(result) || /^ERROR:/i.test(result);
-  }
-
   // Грузим JSX из файла один раз и проверяем, что функции существуют
   function ensureJSXLoaded(cb) {
     if (jsxLoaded) return cb("OK");
@@ -91,44 +86,21 @@
       const p = jsxEscapePath(jsxPath);
 
       setStatus("Загружаю JSX: " + jsxPath);
-      const checkTypes = () => {
+      queuedEvalScript('$.evalFile("' + p + '")', (loadRes) => {
         queuedEvalScript("typeof SDE_InsertMeme + '|' + typeof SDE_Ping", (types) => {
           const ok = types === "function|function";
           jsxLoaded = ok;
           jsxLoading = false;
           if (!ok) {
-            const msg = "JSX не загружен корректно: " + types;
+            const msg = "JSX не загружен корректно: " + types + " / " + loadRes;
             setStatus(msg);
             flushJSXWaiters("ERROR: " + msg);
             return;
           }
           setStatus("JSX загружен: " + types);
           flushJSXWaiters("OK");
-        }, { label: "typeof SDE_InsertMeme/SDE_Ping", timeoutMs: 5000 });
-      };
-
-      // Если ScriptPath уже загрузил JSX, не вызываем $.evalFile лишний раз.
-      queuedEvalScript("typeof SDE_InsertMeme + '|' + typeof SDE_Ping", (typesBefore) => {
-        if (typesBefore === "function|function") {
-          jsxLoaded = true;
-          jsxLoading = false;
-          setStatus("JSX уже загружен: " + typesBefore);
-          flushJSXWaiters("OK");
-          return;
-        }
-
-        const loadCall = '(function(){try{var f=File("' + p + '"); if(!f.exists){return "ERROR: JSX file not found";} $.evalFile(f); return "OK";}catch(e){return "ERROR: " + e.toString();}})()';
-        queuedEvalScript(loadCall, (loadRes) => {
-          if (isEvalFailure(loadRes)) {
-            jsxLoading = false;
-            const msg = "Не удалось загрузить JSX: " + loadRes;
-            setStatus(msg);
-            flushJSXWaiters("ERROR: " + msg);
-            return;
-          }
-          checkTypes();
-        }, { label: "$.evalFile(hostscript.jsx)", timeoutMs: 12000 });
-      }, { label: "check JSX exports", timeoutMs: 5000 });
+        }, { label: "typeof SDE_InsertMeme/SDE_Ping" });
+      }, { label: "$.evalFile(hostscript.jsx)", timeoutMs: 10000 });
     } catch (e) {
       jsxLoading = false;
       const msg = "Ошибка loadJSX: " + e.toString();
