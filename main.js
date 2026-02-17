@@ -124,10 +124,46 @@
 
   // ===== Node.js (для чтения папок) =====
   let fs, path;
+  let childProcess;
   try {
     fs = window.require("fs");
     path = window.require("path");
+    childProcess = window.require("child_process");
   } catch (e) {}
+
+  function copyTextFallback(text) {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return !!ok;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function offerManualInsertFallback(cachedPathWin, reason) {
+    const why = reason ? ("(" + reason + ")") : "";
+    const copied = copyTextFallback(cachedPathWin);
+
+    if (childProcess && process && process.platform === "win32") {
+      try {
+        childProcess.exec('explorer /select,"' + cachedPathWin.replace(/"/g, '\\"') + '"');
+      } catch (e) {}
+    }
+
+    if (copied) {
+      setStatus("Bridge недоступен " + why + ". Путь скопирован — вставь/перетащи мем в Premiere вручную.");
+    } else {
+      setStatus("Bridge недоступен " + why + ". Открыл файл в Explorer — перетащи мем в Premiere вручную.");
+    }
+  }
 
   function clearGrid() { gridEl.innerHTML = ""; }
 
@@ -237,6 +273,8 @@
     clearGrid();
     setStatus("Очищено.");
   });
+
+  btnDiag.addEventListener("click", runBridgeDiagnostics);
 
   btnDiag.addEventListener("click", runBridgeDiagnostics);
 
