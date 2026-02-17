@@ -4,6 +4,7 @@
   const inputEl = document.getElementById("memeRoot");
   const btnLoad = document.getElementById("btnLoad");
   const btnClear = document.getElementById("btnClear");
+  const btnDiag = document.getElementById("btnDiag");
 
   const LAST_PATH_KEY = "sdehelper_last_meme_path";
   inputEl.value = localStorage.getItem(LAST_PATH_KEY) || "D:\\Мемасы\\Мемы";
@@ -236,6 +237,8 @@
     clearGrid();
     setStatus("Очищено.");
   });
+
+  btnDiag.addEventListener("click", runBridgeDiagnostics);
 
   btnLoad.addEventListener("click", () => {
     const root = inputEl.value.trim();
