@@ -240,6 +240,8 @@
 
   btnDiag.addEventListener("click", runBridgeDiagnostics);
 
+  btnDiag.addEventListener("click", runBridgeDiagnostics);
+
   btnLoad.addEventListener("click", () => {
     const root = inputEl.value.trim();
     if (!root) return setStatus("Укажи путь к папке с мемами.");
