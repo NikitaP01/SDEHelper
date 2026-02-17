@@ -1,8 +1,20 @@
 /* hostscript.jsx */
 
+function SDE_Ping() {
+    try {
+        return "PONG";
+    } catch (e) {
+        return "ERROR: " + e.toString();
+    }
+}
+
 // Возвращает строку "OK" или текст ошибки
 function SDE_InsertMemeAtSelectionEnd(filePath) {
     try {
+        if (!filePath || typeof filePath !== "string") return "ERROR: пустой путь";
+        var f = new File(filePath);
+        if (!f.exists) return "ERROR: файл не найден: " + filePath;
+
         if (!app.project) return "Нет проекта";
         var seq = app.project.activeSequence;
         if (!seq) return "Нет активной Sequence (открой таймлайн)";
@@ -38,4 +50,8 @@ function SDE_InsertMemeAtSelectionEnd(filePath) {
     } catch (e) {
         return "ERROR: " + e.toString();
     }
+}
+
+function SDE_InsertMeme(filePath) {
+    return SDE_InsertMemeAtSelectionEnd(filePath);
 }
